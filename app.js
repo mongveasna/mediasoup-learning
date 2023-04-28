@@ -14,15 +14,16 @@ const __dirname = path.resolve()
 
 import { Server } from 'socket.io'
 import mediasoup from 'mediasoup'
+import { v4 as uuidv4 } from 'uuid'
+const announcedIp = '192.168.1.224'
+// app.get('*', (req, res, next) => {
+//     const path = '/sfu/'
 
-app.get('*', (req, res, next) => {
-    const path = '/sfu/'
+//     if (req.path.indexOf(path) == 0 && req.path.length > path.length) return next()
 
-    if (req.path.indexOf(path) == 0 && req.path.length > path.length) return next()
-
-    res.send(`You need to specify a room name in the path e.g. 'https://127.0.0.1/sfu/room'`)
-})
-
+//     res.send(`You need to specify a room name in the path e.g. 'https://127.0.0.1/sfu/room'`)
+// })
+app.use('/', express.static(path.join(__dirname, 'public')))
 app.use('/sfu/:room', express.static(path.join(__dirname, 'public')))
 
 // SSL cert for HTTPS access
@@ -55,7 +56,7 @@ let peers = {}          // { socketId1: { roomName1, socket, transports = [id1, 
 let transports = []     // [ { socketId1, roomName1, transport, consumer }, ... ]
 let producers = []      // [ { socketId1, roomName1, producer, }, ... ]
 let consumers = []      // [ { socketId1, roomName1, consumer, }, ... ]
-
+let tmpRooms = {}
 const createWorker = async () => {
     worker = await mediasoup.createWorker({
         rtcMinPort: 2000,
@@ -119,18 +120,31 @@ connections.on('connection', async socket => {
         consumers = removeItems(consumers, socket.id, 'consumer')
         producers = removeItems(producers, socket.id, 'producer')
         transports = removeItems(transports, socket.id, 'transport')
+        if (peers[socket.id]) {
+            const { roomName } = peers[socket.id]
+            delete peers[socket.id]
 
-        const { roomName } = peers[socket.id]
-        delete peers[socket.id]
-
-        // remove socket from room
-        rooms[roomName] = {
-            router: rooms[roomName].router,
-            peers: rooms[roomName].peers.filter(socketId => socketId !== socket.id)
+            // remove socket from room
+            rooms[roomName] = {
+                router: rooms[roomName].router,
+                peers: rooms[roomName].peers.filter(socketId => socketId !== socket.id)
+            }
+            if (rooms[roomName].peers.length <= 0) {
+                console.log('delete tmpRooms ============= ')
+                delete tmpRooms[roomName]
+            }
         }
     })
 
     socket.on('joinRoom', async ({ roomName }, callback) => {
+        if (!tmpRooms[roomName]) {
+            callback({
+                error: {
+                    message: 'No Room or Room expired, Please create new room in homepage'
+                }
+
+            })
+        }
         // create Router if it does not exist
         // const router1 = rooms[roomName] && rooms[roomName].get('data').router || await createRoom(roomName, socket.id)
         const router1 = await createRoom(roomName, socket.id)
@@ -419,6 +433,16 @@ connections.on('connection', async socket => {
         const { consumer } = consumers.find(consumerData => consumerData.consumer.id === serverConsumerId)
         await consumer.resume()
     })
+
+    socket.on('createRoom', (callback) => {
+        const roomId = uuidv4()
+        tmpRooms[roomId] = roomId
+        callback({ roomId })
+    })
+
+    socket.on('checkroom', ({ roomName }, callback) => {
+        callback({ isExist: tmpRooms[roomName] })
+    })
 })
 
 const createWebRtcTransport = async (router) => {
@@ -429,7 +453,7 @@ const createWebRtcTransport = async (router) => {
                 listenIps: [
                     {
                         ip: '0.0.0.0', // replace with relevant IP address
-                        announcedIp: '192.168.1.136',
+                        announcedIp: announcedIp,
                     }
                 ],
                 enableUdp: true,
